@@ -1,8 +1,8 @@
 /* Seeds the initial admin (from env), website content and sample plans. Safe to run repeatedly. */
 import { PrismaClient } from '@prisma/client';
-import { env } from '../src/config/env';
-import { hashPassword } from '../src/lib/security';
-import { normalizeEmail, normalizePhone } from '../src/lib/identity';
+import { env } from '../config/env';
+import { hashPassword } from '../lib/security';
+import { normalizeEmail, normalizePhone } from '../lib/identity';
 
 const prisma = new PrismaClient({ datasourceUrl: env.DATABASE_URL });
 const img = (id: string, w = 1200) => `https://images.unsplash.com/photo-${id}?auto=format&fit=crop&w=${w}&q=80`;
@@ -13,7 +13,8 @@ async function seedAdmin() {
     console.log('ADMIN_EMAIL / ADMIN_PHONE / ADMIN_PASSWORD not set — skipping admin bootstrap.');
     return;
   }
-  if (ADMIN_PASSWORD.length < 10) throw new Error('ADMIN_PASSWORD must be at least 10 characters');
+  // Same rule as the app's password policy (8+ characters, letters and numbers).
+  if (ADMIN_PASSWORD.length < 8 || !/[a-z]/i.test(ADMIN_PASSWORD) || !/\d/.test(ADMIN_PASSWORD)) throw new Error('ADMIN_PASSWORD must be at least 8 characters with letters and numbers');
   const email = normalizeEmail(ADMIN_EMAIL);
   const phone = normalizePhone(ADMIN_PHONE);
   const existing = await prisma.user.findFirst({ where: { OR: [{ email }, { phone }, { role: 'ADMIN' }] } });

@@ -1,5 +1,7 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // Include the Linux engine so a client generated on Windows also runs on Debian-based hosts.
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
