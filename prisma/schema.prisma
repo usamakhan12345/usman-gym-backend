@@ -1,0 +1,289 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+enum UserStatus {
+  INVITED              // created by admin, no password yet
+  PENDING_VERIFICATION // self sign-up, OTP not verified yet
+  ACTIVE
+  DISABLED
+}
+
+enum MembershipStatus {
+  ACTIVE
+  INACTIVE
+  TERMINATED
+}
+
+enum FeeStatus {
+  PENDING
+  PAID
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  OTHER
+}
+
+enum PaymentStatus {
+  ACTIVE
+  VOIDED
+}
+
+enum ProofStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum OtpPurpose {
+  SIGNUP
+  PASSWORD_RESET
+}
+
+enum OtpChannel {
+  EMAIL
+  SMS
+}
+
+model User {
+  id            String     @id @default(uuid()) @db.Uuid
+  fullName      String
+  email         String?    @unique
+  phone         String     @unique
+  passwordHash  String?
+  role          Role       @default(MEMBER)
+  status        UserStatus @default(PENDING_VERIFICATION)
+  verifiedAt    DateTime?
+  profileImage  String? // relative file name inside the upload dir
+  tokenVersion  Int        @default(0)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  membership     Membership?
+  otps           OtpVerification[]
+  resetRequests  PasswordResetRequest[]
+  recordedPayments Payment[]  @relation("RecordedBy")
+  reviewedProofs   PaymentProof[] @relation("ReviewedBy")
+  voidedPayments   Payment[]  @relation("VoidedBy")
+  auditLogs      AuditLog[]
+
+  @@index([role])
+}
+
+model MembershipPlan {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  description String   @default("")
+  monthlyFee  Decimal  @db.Decimal(10, 2)
+  features    String[]
+  isPublic    Boolean  @default(true)
+  isActive    Boolean  @default(true)
+  isFeatured  Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memberships Membership[]
+}
+
+model Membership {
+  id               String           @id @default(uuid()) @db.Uuid
+  gymId            String           @unique
+  userId           String?          @unique @db.Uuid
+  fullName         String
+  phone            String           @unique
+  email            String?          @unique
+  joinedOn         DateTime         @db.Date
+  /// First billing month (always the 1st of a month). Fees are never generated before this date.
+  billingStartsOn  DateTime         @db.Date
+  /// Current monthly fee. Historical amounts live on each MonthlyFee row.
+  monthlyFee       Decimal          @db.Decimal(10, 2)
+  planId           String?          @db.Uuid
+  status           MembershipStatus @default(ACTIVE)
+  createdById      String?          @db.Uuid
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  user  User?           @relation(fields: [userId], references: [id])
+  plan  MembershipPlan? @relation(fields: [planId], references: [id])
+  fees  MonthlyFee[]
+  payments Payment[]
+  proofs   PaymentProof[]
+
+  @@index([status])
+  @@index([planId])
+  @@index([fullName])
+}
+
+model MonthlyFee {
+  id           String    @id @default(uuid()) @db.Uuid
+  membershipId String    @db.Uuid
+  billingYear  Int
+  billingMonth Int // 1-12
+  /// Snapshot of the fee at generation time. Never recalculated.
+  amount       Decimal   @db.Decimal(10, 2)
+  status       FeeStatus @default(PENDING)
+  dueDate      DateTime  @db.Date
+  paidAt       DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Restrict)
+  payments   Payment[]
+  proofs     PaymentProof[]
+
+  @@unique([membershipId, billingYear, billingMonth])
+  @@index([status, billingYear, billingMonth])
+  @@index([billingYear, billingMonth])
+}
+
+model Payment {
+  id             String        @id @default(uuid()) @db.Uuid
+  feeId          String        @db.Uuid
+  membershipId   String        @db.Uuid
+  amount         Decimal       @db.Decimal(10, 2)
+  paidOn         DateTime      @db.Date
+  method         PaymentMethod
+  reference      String?
+  note           String?
+  status         PaymentStatus @default(ACTIVE)
+  idempotencyKey String?       @unique
+  recordedById   String        @db.Uuid
+  voidedById     String?       @db.Uuid
+  voidedAt       DateTime?
+  voidReason     String?
+  createdAt      DateTime      @default(now())
+
+  fee        MonthlyFee @relation(fields: [feeId], references: [id], onDelete: Restrict)
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Restrict)
+  recordedBy User       @relation("RecordedBy", fields: [recordedById], references: [id])
+  voidedBy   User?      @relation("VoidedBy", fields: [voidedById], references: [id])
+  proof      PaymentProof?
+
+  @@index([membershipId, createdAt])
+  @@index([feeId])
+  @@index([paidOn])
+}
+
+/// A member's uploaded evidence of an online/bank payment. It changes nothing until an admin approves it.
+model PaymentProof {
+  id           String        @id @default(uuid()) @db.Uuid
+  feeId        String        @db.Uuid
+  membershipId String        @db.Uuid
+  imageFile    String // random file name inside uploads/proofs (private, never served statically)
+  method       PaymentMethod
+  reference    String?
+  note         String?
+  status       ProofStatus   @default(PENDING)
+  reviewedById String?       @db.Uuid
+  reviewedAt   DateTime?
+  rejectReason String?
+  paymentId    String?       @unique @db.Uuid
+  createdAt    DateTime      @default(now())
+
+  fee        MonthlyFee @relation(fields: [feeId], references: [id], onDelete: Restrict)
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Restrict)
+  reviewedBy User?      @relation("ReviewedBy", fields: [reviewedById], references: [id])
+  payment    Payment?   @relation(fields: [paymentId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([membershipId, createdAt])
+  @@index([feeId])
+}
+
+model OtpVerification {
+  id          String     @id @default(uuid()) @db.Uuid
+  userId      String     @db.Uuid
+  purpose     OtpPurpose
+  channel     OtpChannel
+  codeHash    String
+  attempts    Int        @default(0)
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose, createdAt])
+}
+
+model PasswordResetRequest {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Counter {
+  key   String @id
+  value Int
+}
+
+model WebsiteSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model GalleryImage {
+  id        String   @id @default(uuid()) @db.Uuid
+  url       String
+  caption   String   @default("")
+  category  String   @default("Gym")
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model Faq {
+  id        String   @id @default(uuid()) @db.Uuid
+  question  String
+  answer    String
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model ContactMessage {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  email     String
+  phone     String?
+  message   String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String?  @db.Uuid
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
